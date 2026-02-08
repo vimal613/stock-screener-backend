@@ -6,6 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 CORS(app)
+@app.route("/")
+def home():
+    return "Backend is running"
+
 
 # Stock universe to scan
 STOCK_UNIVERSE = [
@@ -155,5 +159,6 @@ def health_check():
         'timestamp': datetime.now().isoformat()
     })
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
+
