@@ -1,13 +1,15 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-# ---------------- BASIC ROUTES ----------------
+# ---------------- BASIC ----------------
 @app.route("/")
 def home():
     return "Backend is running"
@@ -20,73 +22,113 @@ STOCK_UNIVERSE = [
     "BA", "CAT", "UNP", "XOM", "CVX", "COP", "DIS", "CMCSA"
 ]
 
-# ---------------- ANALYSIS (BATCH SAFE) ----------------
-def analyze_batch(data, symbol, filters):
+# ---------------- CACHES ----------------
+SCAN_CACHE = {}
+SCAN_TTL = timedelta(minutes=5)
+
+FUNDAMENTALS_CACHE = {}
+FUNDAMENTALS_TTL = timedelta(hours=24)
+
+# ---------------- UTILITIES ----------------
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = -delta.clip(upper=0).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def get_fundamentals(symbol):
+    now = datetime.now()
+    if symbol in FUNDAMENTALS_CACHE:
+        data, ts = FUNDAMENTALS_CACHE[symbol]
+        if now - ts < FUNDAMENTALS_TTL:
+            return data
+
     try:
-        hist = data[symbol].dropna()
+        t = yf.Ticker(symbol)
+        info = t.fast_info  # MUCH lighter than stock.info
 
-        if len(hist) < 20:
-            return None
-
-        current_price = hist["Close"].iloc[-1]
-
-        # Filters
-        if filters.get("minPrice") and current_price < float(filters["minPrice"]):
-            return None
-        if filters.get("maxPrice") and current_price > float(filters["maxPrice"]):
-            return None
-
-        avg_volume = hist["Volume"].mean() / 1_000_000
-        if filters.get("minVolume") and avg_volume < float(filters["minVolume"]):
-            return None
-
-        prices = hist["Close"].values
-        returns_5d = ((prices[-1] - prices[-5]) / prices[-5]) * 100
-        returns_20d = ((prices[-1] - prices[-20]) / prices[-20]) * 100
-
-        score = 50
-        if returns_5d > 0:
-            score += 10
-        if returns_20d > 0:
-            score += 15
-        if returns_20d > 5:
-            score += 10
-        if hist["Volume"].iloc[-5:].mean() > hist["Volume"].mean():
-            score += 10
-
-        if score < 60:
-            return None
-
-        hl_range = (hist["High"] - hist["Low"]).mean()
-
-        entry = round(current_price, 2)
-        target = round(entry + (2.2 * hl_range), 2)
-        stop = round(entry - (1.3 * hl_range), 2)
-
-        trend = "Bullish" if prices[-5:].mean() > prices[-20:].mean() else "Bearish"
-
-        return {
-            "symbol": symbol,
-            "name": symbol,
-            "score": score,
-            "entryPrice": entry,
-            "targetPrice": target,
-            "stopLoss": stop,
-            "trend": trend,
-            "volume": f"{avg_volume:.1f}M",
-            "momentum": round(returns_20d, 2),
+        fundamentals = {
+            "marketCap": f"{round(info.get('market_cap', 0) / 1e9, 1)}B" if info.get("market_cap") else "N/A",
+            "peRatio": round(info.get("pe_ratio"), 2) if info.get("pe_ratio") else "N/A",
         }
+    except Exception:
+        fundamentals = {"marketCap": "N/A", "peRatio": "N/A"}
 
-    except Exception as e:
-        print(f"Error processing {symbol}: {e}")
+    FUNDAMENTALS_CACHE[symbol] = (fundamentals, now)
+    return fundamentals
+
+# ---------------- ANALYSIS ----------------
+def analyze_stock(data, symbol, filters):
+    hist = data[symbol].dropna()
+    if len(hist) < 20:
         return None
 
-# ---------------- SCAN API (ONE YAHOO CALL) ----------------
+    close = hist["Close"]
+    current_price = close.iloc[-1]
+
+    if filters.get("minPrice") and current_price < float(filters["minPrice"]):
+        return None
+    if filters.get("maxPrice") and current_price > float(filters["maxPrice"]):
+        return None
+
+    avg_volume = hist["Volume"].mean() / 1_000_000
+    if filters.get("minVolume") and avg_volume < float(filters["minVolume"]):
+        return None
+
+    returns_5d = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
+    returns_20d = (close.iloc[-1] - close.iloc[-20]) / close.iloc[-20] * 100
+
+    rsi = calculate_rsi(close).iloc[-1]
+    hl_range = (hist["High"] - hist["Low"]).mean()
+
+    score = 50
+    if returns_5d > 0: score += 10
+    if returns_20d > 0: score += 15
+    if returns_20d > 5: score += 10
+    if rsi < 70: score += 10
+
+    if score < 60:
+        return None
+
+    entry = round(current_price, 2)
+    target = round(entry + 2.2 * hl_range, 2)
+    stop = round(entry - 1.3 * hl_range, 2)
+
+    days = 30 if returns_20d > 10 else 60 if returns_20d > 5 else 90
+    target_date = (datetime.now() + timedelta(days=days)).strftime("%b %d, %Y")
+
+    trend = "Bullish" if close.iloc[-5:].mean() > close.iloc[-20:].mean() else "Bearish"
+
+    fundamentals = get_fundamentals(symbol)
+
+    return {
+        "symbol": symbol,
+        "name": symbol,
+        "score": score,
+        "entryPrice": entry,
+        "targetPrice": target,
+        "stopLoss": stop,
+        "targetDate": target_date,
+        "volume": f"{avg_volume:.1f}M",
+        "marketCap": fundamentals["marketCap"],
+        "rsi": round(rsi, 2),
+        "trend": trend,
+        "peRatio": fundamentals["peRatio"],
+        "momentum": round(returns_20d, 2),
+    }
+
+# ---------------- API ----------------
 @app.route("/api/scan", methods=["POST"])
 def scan_stocks():
     filters = request.json or {}
+    cache_key = str(filters)
 
-    # 🔥 ONE Yahoo request for ALL stocks
+    if cache_key in SCAN_CACHE:
+        data, ts = SCAN_CACHE[cache_key]
+        if datetime.now() - ts < SCAN_TTL:
+            return jsonify(data)
+
     data = yf.download(
         tickers=STOCK_UNIVERSE,
         period="3mo",
@@ -97,33 +139,31 @@ def scan_stocks():
     )
 
     results = []
-
     for symbol in STOCK_UNIVERSE:
         if symbol in data:
-            result = analyze_batch(data, symbol, filters)
-            if result:
-                results.append(result)
+            stock = analyze_stock(data, symbol, filters)
+            if stock:
+                results.append(stock)
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    top_results = results[:10]
+    top = results[:10]
 
-    return jsonify({
-        "stocks": top_results,
+    response = {
+        "stocks": top,
         "totalScanned": len(STOCK_UNIVERSE),
-        "totalFound": len(top_results),
+        "totalFound": len(top),
         "timestamp": datetime.now().isoformat()
-    })
+    }
 
-# ---------------- HEALTH CHECK ----------------
-@app.route("/api/health", methods=["GET"])
-def health_check():
-    return jsonify({
-        "status": "healthy",
-        "stocksAvailable": len(STOCK_UNIVERSE),
-        "timestamp": datetime.now().isoformat()
-    })
+    SCAN_CACHE[cache_key] = (response, datetime.now())
+    return jsonify(response)
 
-# ---------------- ENTRY POINT ----------------
+# ---------------- HEALTH ----------------
+@app.route("/api/health")
+def health():
+    return jsonify({"status": "healthy"})
+
+# ---------------- ENTRY ----------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
