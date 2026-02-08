@@ -4,7 +4,6 @@ import yfinance as yf
 from datetime import datetime
 import pytz
 import time
-import statistics
 import os
 
 app = Flask(__name__)
@@ -13,7 +12,7 @@ CORS(app)
 # ---------------- BASIC ROUTES ----------------
 @app.route("/")
 def home():
-    return "Indian Trading Backend Running"
+    return "Indian Trading Backend Running - TEST MODE"
 
 @app.route("/api/health")
 def health():
@@ -23,9 +22,9 @@ def health():
 IST = pytz.timezone("Asia/Kolkata")
 
 def market_time_ok():
-    return True  # TEST MODE
+    return True  # FORCE ENABLED FOR TESTING
 
-# ---------------- STOCK UNIVERSE (SMALL & SAFE) ----------------
+# ---------------- STOCK UNIVERSE ----------------
 STOCKS = [
     "RELIANCE.NS",
     "TCS.NS",
@@ -34,7 +33,7 @@ STOCKS = [
     "ICICIBANK.NS"
 ]
 
-# ---------------- CORE ANALYSIS ----------------
+# ---------------- CORE ANALYSIS (VISIBILITY MODE) ----------------
 def analyze_stock(symbol, min_price=None, max_price=None):
     try:
         data = yf.download(
@@ -45,52 +44,25 @@ def analyze_stock(symbol, min_price=None, max_price=None):
             threads=False
         )
 
-        if data.empty or len(data) < 7:
+        if data.empty:
             return None
 
-        close = data["Close"].tolist()
-        volume = data["Volume"].tolist()
+        price = round(data["Close"].iloc[-1], 2)
 
-        price = round(close[-1], 2)
-
-        # Price filter (optional)
+        # Optional price range filter
         if min_price is not None and price < min_price:
             return None
         if max_price is not None and price > max_price:
             return None
 
-        # Daily % moves
-        daily_moves = [
-            (close[i] - close[i - 1]) / close[i - 1] * 100
-            for i in range(1, len(close))
-        ]
-
-        # Reject hype spikes
-        if max(daily_moves[-3:]) > 3.5:
-            return None
-
-        # Momentum (relaxed for TEST MODE)
-        green_days = sum(
-            1 for i in range(-5, -1) if close[i] > close[i - 1]
-        )
-        if green_days < 2:
-            return None
-
-        avg_move = statistics.mean(abs(x) for x in daily_moves[-5:])
-        if avg_move < 0.2 or avg_move > 2.5:
-            return None
-
-        # Volume confirmation
-        if volume[-1] < statistics.mean(volume[-10:]):
-            return None
-
+        # VISIBILITY MODE → accept all valid Yahoo data
         return {
             "symbol": symbol.replace(".NS", ""),
             "price": price
         }
 
     except Exception as e:
-        print(f"Error processing {symbol}: {e}")
+        print(f"Error fetching {symbol}: {e}")
         return None
 
 # ---------------- SCAN API ----------------
@@ -102,36 +74,35 @@ def scan():
     if not market_time_ok():
         return jsonify({
             "marketStatus": "NO_TRADE_TODAY",
-            "reason": "Outside allowed scan time"
+            "reason": "Outside scan time"
         })
 
     filters = request.json or {}
     min_price = float(filters["minPrice"]) if filters.get("minPrice") else None
     max_price = float(filters["maxPrice"]) if filters.get("maxPrice") else None
 
-    valid = []
+    results = []
 
     for symbol in STOCKS:
-        result = analyze_stock(symbol, min_price, max_price)
-        if result:
-            valid.append(result)
+        stock = analyze_stock(symbol, min_price, max_price)
+        if stock:
+            results.append(stock)
         time.sleep(1.2)  # Yahoo safety
 
-    # TEST MODE RESPONSE
     return jsonify({
         "marketStatus": "TRADE",
-        "note": "TEST MODE: Showing visible setups",
-        "validSetups": [v["symbol"] for v in valid],
+        "note": "VISIBILITY MODE - Strategy filters disabled",
+        "validSetups": [s["symbol"] for s in results],
         "topPicks": [
             {
-                "symbol": v["symbol"],
+                "symbol": s["symbol"],
                 "entry": "MARKET",
                 "targetPercent": 2.2,
                 "stopLossPercent": -1.0,
                 "maxHoldDays": 5,
-                "confidence": "LOW"
+                "confidence": "TEST"
             }
-            for v in valid[:3]
+            for s in results[:3]
         ]
     })
 
