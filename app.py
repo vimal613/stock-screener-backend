@@ -112,10 +112,23 @@ def scan():
         time.sleep(1.2)  # Yahoo safety
 
     if len(valid) < 3:
-        return jsonify({
-            "marketStatus": "NO_TRADE_TODAY",
-            "reason": "Not enough quality setups for 5-day strategy"
-        })
+    return jsonify({
+        "marketStatus": "TRADE",
+        "note": "TEST MODE: Showing partial setups",
+        "validSetups": [v["symbol"] for v in valid],
+        "topPicks": [
+            {
+                "symbol": v["symbol"],
+                "entry": "MARKET",
+                "targetPercent": 2.2,
+                "stopLossPercent": -1.0,
+                "maxHoldDays": 5,
+                "confidence": "LOW"
+            }
+            for v in valid
+        ]
+    })
+
 
     # Rank by smoother movement (lower volatility proxy = price)
     valid.sort(key=lambda x: x["price"])
