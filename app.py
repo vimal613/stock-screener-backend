@@ -1,48 +1,36 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yfinance as yf
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
-import random
+from datetime import datetime
 import os
 
 app = Flask(__name__)
 CORS(app)
 
+# ---------------- BASIC ROUTES ----------------
 @app.route("/")
 def home():
     return "Backend is running"
 
-# ---------------- CACHE ----------------
-CACHE = {}
-CACHE_TTL = timedelta(minutes=5)
-
 # ---------------- STOCK UNIVERSE ----------------
 STOCK_UNIVERSE = [
-    'AAPL', 'MSFT', 'GOOGL', 'META', 'NVDA', 'AMD', 'INTC', 'TSLA',
-    'AMZN', 'NFLX', 'JPM', 'BAC', 'WFC', 'GS', 'V', 'MA',
-    'JNJ', 'UNH', 'PFE', 'ABBV', 'WMT', 'HD', 'NKE', 'MCD',
-    'BA', 'CAT', 'UNP', 'XOM', 'CVX', 'COP', 'DIS', 'CMCSA'
+    "AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "INTC", "TSLA",
+    "AMZN", "NFLX", "JPM", "BAC", "WFC", "GS", "V", "MA",
+    "JNJ", "UNH", "PFE", "ABBV", "WMT", "HD", "NKE", "MCD",
+    "BA", "CAT", "UNP", "XOM", "CVX", "COP", "DIS", "CMCSA"
 ]
 
-# ---------------- STOCK ANALYSIS ----------------
-def analyze_stock(symbol, filters):
+# ---------------- ANALYSIS (BATCH SAFE) ----------------
+def analyze_batch(data, symbol, filters):
     try:
-        stock = yf.Ticker(symbol)
+        hist = data[symbol].dropna()
 
-        # Yahoo-safe call
-        hist = stock.history(period="3mo", interval="1d")
-
-        if hist.empty or len(hist) < 20:
+        if len(hist) < 20:
             return None
-
-        # Anti rate-limit delay
-        time.sleep(random.uniform(0.4, 0.8))
 
         current_price = hist["Close"].iloc[-1]
 
-        # Price filters
+        # Filters
         if filters.get("minPrice") and current_price < float(filters["minPrice"]):
             return None
         if filters.get("maxPrice") and current_price > float(filters["maxPrice"]):
@@ -53,7 +41,6 @@ def analyze_stock(symbol, filters):
             return None
 
         prices = hist["Close"].values
-
         returns_5d = ((prices[-1] - prices[-5]) / prices[-5]) * 100
         returns_20d = ((prices[-1] - prices[-20]) / prices[-20]) * 100
 
@@ -91,49 +78,43 @@ def analyze_stock(symbol, filters):
         }
 
     except Exception as e:
-        print(f"Yahoo error for {symbol}: {e}")
+        print(f"Error processing {symbol}: {e}")
         return None
 
-# ---------------- SCAN API ----------------
+# ---------------- SCAN API (ONE YAHOO CALL) ----------------
 @app.route("/api/scan", methods=["POST"])
 def scan_stocks():
     filters = request.json or {}
-    start_time = datetime.now()
 
-    cache_key = str(filters)
-    if cache_key in CACHE:
-        data, ts = CACHE[cache_key]
-        if datetime.now() - ts < CACHE_TTL:
-            return jsonify(data)
+    # 🔥 ONE Yahoo request for ALL stocks
+    data = yf.download(
+        tickers=STOCK_UNIVERSE,
+        period="3mo",
+        interval="1d",
+        group_by="ticker",
+        threads=False,
+        progress=False
+    )
 
     results = []
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(analyze_stock, s, filters) for s in STOCK_UNIVERSE]
-
-        for future in as_completed(futures):
-            # Prevent Render worker timeout
-            if (datetime.now() - start_time).seconds > 18:
-                break
-
-            result = future.result()
+    for symbol in STOCK_UNIVERSE:
+        if symbol in data:
+            result = analyze_batch(data, symbol, filters)
             if result:
                 results.append(result)
 
     results.sort(key=lambda x: x["score"], reverse=True)
     top_results = results[:10]
 
-    response = {
+    return jsonify({
         "stocks": top_results,
         "totalScanned": len(STOCK_UNIVERSE),
         "totalFound": len(top_results),
         "timestamp": datetime.now().isoformat()
-    }
+    })
 
-    CACHE[cache_key] = (response, datetime.now())
-    return jsonify(response)
-
-# ---------------- HEALTH ----------------
+# ---------------- HEALTH CHECK ----------------
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({
@@ -142,7 +123,7 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
-# ---------------- ENTRY ----------------
+# ---------------- ENTRY POINT ----------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
