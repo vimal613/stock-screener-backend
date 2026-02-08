@@ -4,20 +4,16 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import pytz
 import time
-import statistics
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-# ============================================
-# INDIAN TIMEZONE
-# ============================================
 IST = pytz.timezone("Asia/Kolkata")
 
-# ============================================
-# NIFTY-50 STOCK UNIVERSE
-# ============================================
+# -------------------------------
+# STOCK UNIVERSES
+# -------------------------------
 NIFTY_50 = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
     "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
@@ -31,318 +27,119 @@ NIFTY_50 = [
     "ADANIPORTS.NS", "SHREECEM.NS", "UPL.NS", "LTIM.NS", "SBILIFE.NS"
 ]
 
-# ============================================
-# MARKET TIMING CHECK
-# ============================================
-def is_market_time():
-    """Check if current time is in allowed scan window"""
-    now = datetime.now(IST)
-    current_time = now.time()
-    
-    # Market hours: 10:45 AM - 1:30 PM IST
-    start_time = datetime.strptime("10:45", "%H:%M").time()
-    end_time = datetime.strptime("13:30", "%H:%M").time()
-    
-    # Check if weekday (Mon-Fri)
-    is_weekday = now.weekday() < 5
-    
-    # Check if in time window
-    is_valid_time = start_time <= current_time <= end_time
-    
-    return is_weekday and is_valid_time
+# Small MIDCAP sample (expand later safely)
+MIDCAP = [
+    "FEDERALBNK.NS", "IDFCFIRSTB.NS", "BANDHANBNK.NS",
+    "LUPIN.NS", "TORNTPHARM.NS", "ALKEM.NS",
+    "AUBANK.NS", "PAGEIND.NS", "MPHASIS.NS"
+]
 
-# ============================================
-# STOCK ANALYSIS FUNCTION
-# ============================================
-def analyze_stock(symbol, min_price=None, max_price=None):
-    """
-    Analyze a single stock for 5-day momentum strategy
-    Returns dict with trade data or None if rejected
-    """
+# -------------------------------
+# SAFE STOCK ANALYSIS
+# -------------------------------
+def analyze_stock(symbol):
     try:
-        # Fetch stock data
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="10d", interval="1d")
-        
-        # Data validation
-        if hist.empty or len(hist) < 7:
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period="7d", interval="1d")
+
+        if hist.empty or len(hist) < 5:
             return None
-        
-        # Get price data
-        close_prices = hist["Close"].values
-        volumes = hist["Volume"].values
-        high_prices = hist["High"].values
-        low_prices = hist["Low"].values
-        
-        current_price = float(close_prices[-1])
-        
-        # FILTER 1: Price Range (optional)
-        if min_price and current_price < min_price:
+
+        close = hist["Close"].values
+        high = hist["High"].values
+        low = hist["Low"].values
+        volume = hist["Volume"].values
+
+        current_price = float(close[-1])
+        price_5d_ago = float(close[0])
+
+        move_5d = ((current_price - price_5d_ago) / price_5d_ago) * 100
+
+        if move_5d < 0.5 or move_5d > 2.5:
             return None
-        if max_price and current_price > max_price:
-            return None
-        
-        # FILTER 2: 5-Day Movement (0.5% to 2.5%)
-        price_5d_ago = close_prices[-6]
-        movement_5d = ((current_price - price_5d_ago) / price_5d_ago) * 100
-        
-        if movement_5d < 0.5 or movement_5d > 2.5:
-            return None
-        
-        # FILTER 3: Daily Movement Pattern (smooth, not wild)
-        daily_moves = []
-        for i in range(-5, 0):
-            daily_move = abs((close_prices[i] - close_prices[i-1]) / close_prices[i-1] * 100)
-            daily_moves.append(daily_move)
-        
-        avg_daily_move = statistics.mean(daily_moves)
-        
-        if avg_daily_move < 0.3 or avg_daily_move > 0.8:
-            return None
-        
-        # FILTER 4: No Single-Day Spikes (< 2%)
-        max_daily_move = max(daily_moves)
-        if max_daily_move > 2.0:
-            return None
-        
-        # FILTER 5: Green Days (at least 3 out of 5)
-        green_days = sum(1 for i in range(-5, 0) if close_prices[i] > close_prices[i-1])
+
+        green_days = sum(1 for i in range(1, 5) if close[i] > close[i-1])
         if green_days < 3:
             return None
-        
-        # FILTER 6: Volume Confirmation (>= 80% of average)
-        avg_volume = statistics.mean(volumes[-10:])
-        current_volume = volumes[-1]
-        
-        if current_volume < (avg_volume * 0.8):
+
+        avg_volume = volume.mean()
+        if volume[-1] < avg_volume * 0.8:
             return None
-        
-        # FILTER 7: Volatility Check (0.5% - 1.5%)
-        daily_ranges = [(high_prices[i] - low_prices[i]) / close_prices[i] * 100 
-                       for i in range(-5, 0)]
-        avg_volatility = statistics.mean(daily_ranges)
-        
-        if avg_volatility < 0.5 or avg_volatility > 1.5:
+
+        avg_range = ((high - low) / close).mean() * 100
+        if avg_range < 0.5 or avg_range > 1.5:
             return None
-        
-        # CALCULATE TRADE PARAMETERS
-        target_price = round(current_price * 1.025, 2)  # +2.5%
-        stop_loss = round(current_price * 0.99, 2)      # -1%
-        
-        # Calculate exit date (5 trading days from now)
-        exit_date = datetime.now(IST) + timedelta(days=7)
-        exit_date_str = exit_date.strftime("%b %d, %Y")
-        
-        # Risk/Reward Ratio
-        profit_potential = target_price - current_price
-        loss_potential = current_price - stop_loss
-        risk_reward = profit_potential / loss_potential if loss_potential > 0 else 0
-        
-        # FILTER 8: Minimum Risk/Reward (2:1)
-        if risk_reward < 2.0:
+
+        target = round(current_price * 1.025, 2)
+        stop = round(current_price * 0.99, 2)
+
+        rr = (target - current_price) / (current_price - stop)
+        if rr < 2:
             return None
-        
-        # Stock PASSED all filters
+
         return {
             "symbol": symbol.replace(".NS", ""),
-            "currentPrice": round(current_price, 2),
-            "targetPrice": target_price,
-            "stopLoss": stop_loss,
-            "movement5d": round(movement_5d, 2),
-            "avgDailyMove": round(avg_daily_move, 2),
-            "volatility": round(avg_volatility, 2),
-            "riskReward": round(risk_reward, 2),
-            "exitDate": exit_date_str,
+            "price": round(current_price, 2),
+            "target": target,
+            "stop": stop,
+            "move5d": round(move_5d, 2),
             "greenDays": green_days,
-            "volumeConfirmed": current_volume > avg_volume
+            "riskReward": round(rr, 2)
         }
-        
-    except Exception as e:
-        print(f"Error analyzing {symbol}: {e}")
+
+    except Exception:
         return None
 
-# ============================================
-# RANK STOCKS BY QUALITY
-# ============================================
-def rank_stocks(stocks):
-    """
-    Rank stocks by quality score
-    Higher score = better trade setup
-    """
-    for stock in stocks:
-        score = 0
-        
-        # Smoothness (lower volatility = better)
-        if stock["volatility"] < 0.7:
-            score += 30
-        elif stock["volatility"] < 1.0:
-            score += 20
-        else:
-            score += 10
-        
-        # Risk/Reward
-        if stock["riskReward"] > 2.5:
-            score += 30
-        elif stock["riskReward"] > 2.2:
-            score += 20
-        else:
-            score += 10
-        
-        # Movement strength
-        if 1.0 <= stock["movement5d"] <= 1.8:
-            score += 25
-        elif 0.8 <= stock["movement5d"] < 1.0:
-            score += 20
-        else:
-            score += 15
-        
-        # Green days
-        if stock["greenDays"] >= 4:
-            score += 15
-        else:
-            score += 10
-        
-        stock["qualityScore"] = score
-    
-    # Sort by quality score
-    return sorted(stocks, key=lambda x: x["qualityScore"], reverse=True)
 
-# ============================================
-# CALCULATE CAPITAL ALLOCATION
-# ============================================
-def calculate_position(stock, capital):
-    """Calculate how many shares to buy with given capital"""
-    price = stock["currentPrice"]
-    
-    # Use 95% of capital (keep 5% buffer)
-    usable_capital = capital * 0.95
-    
-    # Calculate quantity
-    quantity = int(usable_capital / price)
-    
-    # Calculate actual investment
-    investment = quantity * price
-    
-    # Calculate P&L
-    profit_per_share = stock["targetPrice"] - price
-    loss_per_share = price - stock["stopLoss"]
-    
-    max_profit = round(quantity * profit_per_share, 2)
-    max_loss = round(quantity * loss_per_share, 2)
-    
-    return {
-        "quantity": quantity,
-        "investment": round(investment, 2),
-        "maxProfit": max_profit,
-        "maxLoss": max_loss,
-        "targetPercent": 2.5,
-        "stopPercent": -1.0
-    }
-
-# ============================================
-# MAIN SCAN ENDPOINT
-# ============================================
-@app.route("/api/scan", methods=["POST", "OPTIONS"])
-def scan_market():
-    """Main scanner endpoint"""
-    
-    if request.method == "OPTIONS":
-        return jsonify({"ok": True})
-    
-    # Check market timing
-    if not is_market_time():
-        now = datetime.now(IST)
-        return jsonify({
-            "status": "BLOCKED",
-            "reason": "OUTSIDE_SCAN_HOURS",
-            "message": "Scan only allowed 10:45 AM - 1:30 PM IST",
-            "currentTime": now.strftime("%I:%M %p IST"),
-            "isWeekend": now.weekday() >= 5
-        })
-    
-    # Get filters from request
+# -------------------------------
+# SCAN ENDPOINT
+# -------------------------------
+@app.route("/api/scan", methods=["POST"])
+def scan():
     data = request.json or {}
+
+    universe = data.get("universe", "NIFTY50")
     capital = float(data.get("capital", 50000))
-    min_price = float(data["minPrice"]) if data.get("minPrice") else None
-    max_price = float(data["maxPrice"]) if data.get("maxPrice") else None
-    
-    # Scan all NIFTY-50 stocks
-    valid_stocks = []
-    scanned_count = 0
-    
-    for symbol in NIFTY_50:
-        scanned_count += 1
-        stock = analyze_stock(symbol, min_price, max_price)
-        
-        if stock:
-            valid_stocks.append(stock)
-        
-        # Rate limit protection
-        time.sleep(0.8)
-    
-    # Rank stocks
-    ranked_stocks = rank_stocks(valid_stocks)
-    
-    # Get top 3
-    top_picks = ranked_stocks[:3]
-    
-    # Add capital allocation to top picks
-    for stock in top_picks:
-        position = calculate_position(stock, capital)
-        stock.update(position)
-        
-        # Add confidence level
-        if stock["qualityScore"] >= 85:
-            stock["confidence"] = "HIGH"
-            stock["stars"] = 3
-        elif stock["qualityScore"] >= 70:
-            stock["confidence"] = "GOOD"
-            stock["stars"] = 2
-        else:
-            stock["confidence"] = "MODERATE"
-            stock["stars"] = 1
-    
-    # Determine market status
-    if len(top_picks) == 0:
-        market_status = "NO_TRADE"
-        message = "No high-probability setups today. Capital protection mode."
-    else:
-        market_status = "TRADE"
-        message = f"Found {len(top_picks)} quality trade setup(s)"
-    
-    # Return response
+
+    stocks = NIFTY_50 if universe == "NIFTY50" else MIDCAP
+
+    results = []
+    scanned = 0
+
+    for s in stocks:
+        scanned += 1
+        r = analyze_stock(s)
+        if r:
+            qty = int((capital * 0.95) / r["price"])
+            r["quantity"] = qty
+            r["investment"] = round(qty * r["price"], 2)
+            r["maxProfit"] = round(qty * (r["target"] - r["price"]), 2)
+            r["maxLoss"] = round(qty * (r["price"] - r["stop"]), 2)
+            results.append(r)
+
+        time.sleep(0.7)  # Yahoo safety
+
+    results = sorted(results, key=lambda x: x["riskReward"], reverse=True)
+
     return jsonify({
-        "status": market_status,
-        "message": message,
-        "scanTime": datetime.now(IST).strftime("%I:%M %p IST"),
-        "scannedStocks": scanned_count,
-        "passedFilters": len(valid_stocks),
-        "topPicks": top_picks,
-        "allValidSetups": [s["symbol"] for s in ranked_stocks]
+        "status": "TRADE" if results else "NO_TRADE",
+        "timestamp": datetime.now(IST).isoformat(),
+        "scanned": scanned,
+        "found": len(results),
+        "results": results[:10]  # show ALL valid, top first
     })
 
-# ============================================
-# HEALTH CHECK
-# ============================================
-@app.route("/api/health", methods=["GET"])
+
+@app.route("/api/health")
 def health():
-    """Health check endpoint"""
-    return jsonify({
-        "status": "healthy",
-        "time": datetime.now(IST).strftime("%I:%M %p IST"),
-        "marketTime": is_market_time()
-    })
+    return jsonify({"status": "healthy"})
 
-# ============================================
-# ROOT
-# ============================================
+
 @app.route("/")
 def home():
-    return "Alpha Screener API - Running"
+    return "Alpha Screener Backend Running"
 
-# ============================================
-# RUN SERVER
-# ============================================
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)
