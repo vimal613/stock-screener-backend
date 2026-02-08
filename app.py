@@ -8,7 +8,7 @@ import statistics
 import os
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app)
 
 # ---------------- BASIC ROUTES ----------------
 @app.route("/")
@@ -19,14 +19,14 @@ def home():
 def health():
     return jsonify({"status": "healthy"})
 
-# ---------------- TIME (IST) ----------------
+# ---------------- TIME ----------------
 IST = pytz.timezone("Asia/Kolkata")
 
 def market_time_ok():
-    return True  # ✅ TEST MODE (IMPORTANT)
+    return True  # TEST MODE
 
-# ---------------- NIFTY STOCKS (SMALL SET FOR STABILITY) ----------------
-NIFTY_50 = [
+# ---------------- STOCK UNIVERSE (SMALL & SAFE) ----------------
+STOCKS = [
     "RELIANCE.NS",
     "TCS.NS",
     "INFY.NS",
@@ -53,26 +53,32 @@ def analyze_stock(symbol, min_price=None, max_price=None):
 
         price = round(close[-1], 2)
 
-        # Optional price range filter
-        if min_price and price < min_price:
+        # Price filter (optional)
+        if min_price is not None and price < min_price:
             return None
-        if max_price and price > max_price:
+        if max_price is not None and price > max_price:
             return None
 
-        # Reject hype spikes (>3.5% in last 3 days)
-        daily_moves = [(close[i] - close[i-1]) / close[i-1] * 100 for i in range(1, len(close))]
+        # Daily % moves
+        daily_moves = [
+            (close[i] - close[i - 1]) / close[i - 1] * 100
+            for i in range(1, len(close))
+        ]
+
+        # Reject hype spikes
         if max(daily_moves[-3:]) > 3.5:
             return None
 
-        # Momentum rules
-        green_days = sum(1 for i in range(-5, -1) if close[i] > close[i-1])
+        # Momentum (relaxed for TEST MODE)
+        green_days = sum(
+            1 for i in range(-5, -1) if close[i] > close[i - 1]
+        )
         if green_days < 2:
             return None
 
         avg_move = statistics.mean(abs(x) for x in daily_moves[-5:])
-if avg_move < 0.2 or avg_move > 2.5:
-    return None
-
+        if avg_move < 0.2 or avg_move > 2.5:
+            return None
 
         # Volume confirmation
         if volume[-1] < statistics.mean(volume[-10:]):
@@ -105,38 +111,16 @@ def scan():
 
     valid = []
 
-    for symbol in NIFTY_50:
-        stock = analyze_stock(symbol, min_price, max_price)
-        if stock:
-            valid.append(stock)
-        time.sleep(1.2)  # Yahoo rate-limit safety
+    for symbol in STOCKS:
+        result = analyze_stock(symbol, min_price, max_price)
+        if result:
+            valid.append(result)
+        time.sleep(1.2)  # Yahoo safety
 
-    # ---------------- TEST MODE RESPONSE ----------------
-    if len(valid) < 3:
-        return jsonify({
-            "marketStatus": "TRADE",
-            "note": "TEST MODE: Showing partial setups",
-            "validSetups": [v["symbol"] for v in valid],
-            "topPicks": [
-                {
-                    "symbol": v["symbol"],
-                    "entry": "MARKET",
-                    "targetPercent": 2.2,
-                    "stopLossPercent": -1.0,
-                    "maxHoldDays": 5,
-                    "confidence": "LOW"
-                }
-                for v in valid
-            ]
-        })
-
-    # ---------------- NORMAL MODE ----------------
-    valid.sort(key=lambda x: x["price"])
-    top_picks = valid[:3]
-
+    # TEST MODE RESPONSE
     return jsonify({
         "marketStatus": "TRADE",
-        "scanTime": datetime.now(IST).strftime("%I:%M %p IST"),
+        "note": "TEST MODE: Showing visible setups",
         "validSetups": [v["symbol"] for v in valid],
         "topPicks": [
             {
@@ -145,9 +129,9 @@ def scan():
                 "targetPercent": 2.2,
                 "stopLossPercent": -1.0,
                 "maxHoldDays": 5,
-                "confidence": "HIGH" if i == 0 else "MEDIUM"
+                "confidence": "LOW"
             }
-            for i, v in enumerate(top_picks)
+            for v in valid[:3]
         ]
     })
 
