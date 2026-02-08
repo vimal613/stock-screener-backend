@@ -27,12 +27,13 @@ def market_time_ok():
 
 # ---------------- NIFTY 50 (STABLE SET) ----------------
 NIFTY_50 = [
-    "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
-    "AXISBANK.NS","KOTAKBANK.NS","SBIN.NS","ITC.NS","LT.NS",
-    "HINDUNILVR.NS","BAJFINANCE.NS","ASIANPAINT.NS","MARUTI.NS",
-    "SUNPHARMA.NS","TITAN.NS","ULTRACEMCO.NS","POWERGRID.NS",
-    "NTPC.NS","ONGC.NS"
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS"
 ]
+
 
 # ---------------- CORE ANALYSIS ----------------
 def analyze_stock(symbol, min_price=None, max_price=None):
@@ -108,7 +109,7 @@ def scan():
         stock = analyze_stock(symbol, min_price, max_price)
         if stock:
             valid.append(stock)
-        time.sleep(0.3)  # Yahoo safety
+        time.sleep(1.2)  # Yahoo safety
 
     if len(valid) < 3:
         return jsonify({
