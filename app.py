@@ -66,12 +66,13 @@ def analyze_stock(symbol, min_price=None, max_price=None):
 
         # Momentum rules
         green_days = sum(1 for i in range(-5, -1) if close[i] > close[i-1])
-        if green_days < 3:
+        if green_days < 2:
             return None
 
         avg_move = statistics.mean(abs(x) for x in daily_moves[-5:])
-        if avg_move < 0.4 or avg_move > 1.5:
-            return None
+if avg_move < 0.2 or avg_move > 2.5:
+    return None
+
 
         # Volume confirmation
         if volume[-1] < statistics.mean(volume[-10:]):
