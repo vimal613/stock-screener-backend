@@ -3,7 +3,6 @@ flask-cors==4.0.0
 yfinance==0.2.48
 pandas
 numpy
-ta-lib==0.5.1
 gunicorn==21.2.0
 python-dateutil
 requests
