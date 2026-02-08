@@ -9,10 +9,10 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# ---------------- BASIC ROUTES ----------------
+# ---------------- ROUTES ----------------
 @app.route("/")
 def home():
-    return "Indian Trading Backend Running - TEST MODE"
+    return "Indian Trading Backend Running - VISIBILITY MODE"
 
 @app.route("/api/health")
 def health():
@@ -22,7 +22,7 @@ def health():
 IST = pytz.timezone("Asia/Kolkata")
 
 def market_time_ok():
-    return True  # FORCE ENABLED FOR TESTING
+    return True  # forced ON for testing
 
 # ---------------- STOCK UNIVERSE ----------------
 STOCKS = [
@@ -33,39 +33,32 @@ STOCKS = [
     "ICICIBANK.NS"
 ]
 
-# ---------------- CORE ANALYSIS (VISIBILITY MODE) ----------------
+# ---------------- ANALYSIS (RENDER SAFE) ----------------
 def analyze_stock(symbol, min_price=None, max_price=None):
     try:
-        data = yf.download(
-            symbol,
-            period="1mo",
-            interval="1d",
-            progress=False,
-            threads=False
-        )
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1mo")
 
-        if data.empty:
+        if hist.empty:
             return None
 
-        price = round(data["Close"].iloc[-1], 2)
+        price = round(hist["Close"].iloc[-1], 2)
 
-        # Optional price range filter
         if min_price is not None and price < min_price:
             return None
         if max_price is not None and price > max_price:
             return None
 
-        # VISIBILITY MODE → accept all valid Yahoo data
         return {
             "symbol": symbol.replace(".NS", ""),
             "price": price
         }
 
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+        print(f"Yahoo error {symbol}: {e}")
         return None
 
-# ---------------- SCAN API ----------------
+# ---------------- SCAN ----------------
 @app.route("/api/scan", methods=["POST", "OPTIONS"])
 def scan():
     if request.method == "OPTIONS":
@@ -74,7 +67,7 @@ def scan():
     if not market_time_ok():
         return jsonify({
             "marketStatus": "NO_TRADE_TODAY",
-            "reason": "Outside scan time"
+            "reason": "Outside scan window"
         })
 
     filters = request.json or {}
@@ -87,19 +80,19 @@ def scan():
         stock = analyze_stock(symbol, min_price, max_price)
         if stock:
             results.append(stock)
-        time.sleep(1.2)  # Yahoo safety
+        time.sleep(1.5)  # Yahoo protection
 
     return jsonify({
         "marketStatus": "TRADE",
-        "note": "VISIBILITY MODE - Strategy filters disabled",
+        "note": "VISIBILITY MODE - Yahoo single-symbol safe",
         "validSetups": [s["symbol"] for s in results],
         "topPicks": [
             {
                 "symbol": s["symbol"],
                 "entry": "MARKET",
-                "targetPercent": 2.2,
+                "targetPercent": 2.0,
                 "stopLossPercent": -1.0,
-                "maxHoldDays": 5,
+                "holdDays": 5,
                 "confidence": "TEST"
             }
             for s in results[:3]
