@@ -22,10 +22,13 @@ def health():
 # ---------------- TIME (IST) ----------------
 IST = pytz.timezone("Asia/Kolkata")
 
+#def market_time_ok():
+    #now = datetime.now(IST).time()
+    #return now >= datetime.strptime("10:45", "%H:%M").time() and \
+           #now <= datetime.strptime("13:30", "%H:%M").time()
+
 def market_time_ok():
-    now = datetime.now(IST).time()
-    return now >= datetime.strptime("10:45", "%H:%M").time() and \
-           now <= datetime.strptime("13:30", "%H:%M").time()
+    return True  # TEMP TEST MODE
 
 # ---------------- NIFTY 50 (STABLE SET) ----------------
 NIFTY_50 = [
