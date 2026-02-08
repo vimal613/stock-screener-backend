@@ -1,70 +1,115 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import yfinance as yf
 from datetime import datetime
+import time
 import os
 
 app = Flask(__name__)
 CORS(app)
 
+# -------------------------
+# BASIC ROUTES
+# -------------------------
 @app.route("/")
 def home():
-    return "Stock Screener Backend - MOCK DATA MODE"
+    return "Stock Screener API running"
 
 @app.route("/api/health")
 def health():
     return jsonify({"status": "healthy"})
 
-# ---------------- MOCK NIFTY DATA ----------------
-# This simulates what real market data would look like
-MOCK_STOCKS = [
-    {"symbol": "RELIANCE", "price": 2894, "avgMove": 0.8},
-    {"symbol": "TCS", "price": 4120, "avgMove": 0.6},
-    {"symbol": "INFY", "price": 1652, "avgMove": 1.1},
-    {"symbol": "HDFCBANK", "price": 1540, "avgMove": 0.5},
-    {"symbol": "ICICIBANK", "price": 1045, "avgMove": 0.9},
+# -------------------------
+# NIFTY-STYLE STOCK LIST
+# (Safe count for Yahoo)
+# -------------------------
+STOCKS = [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "LT.NS",
+    "ITC.NS",
+    "SBIN.NS",
+    "AXISBANK.NS",
+    "KOTAKBANK.NS"
 ]
 
-@app.route("/api/scan", methods=["POST", "OPTIONS"])
+# -------------------------
+# SIMPLE, SAFE ANALYSIS
+# -------------------------
+def analyze_stock(symbol):
+    try:
+        stock = yf.Ticker(symbol)
+
+        # last 10 trading days only (safe)
+        hist = stock.history(period="10d", interval="1d")
+
+        if hist.empty or len(hist) < 5:
+            return None
+
+        close_prices = hist["Close"].values
+
+        # 5-day move %
+        start_price = close_prices[-5]
+        end_price = close_prices[-1]
+        move_pct = ((end_price - start_price) / start_price) * 100
+
+        # filter small but usable moves
+        if move_pct < 0.3 or move_pct > 3:
+            return None
+
+        return {
+            "symbol": symbol.replace(".NS", ""),
+            "price": round(float(end_price), 2),
+            "avgMove": round(move_pct, 2)
+        }
+
+    except Exception:
+        return None
+
+# -------------------------
+# MAIN SCAN API
+# -------------------------
+@app.route("/api/scan", methods=["POST"])
 def scan():
-    if request.method == "OPTIONS":
-        return jsonify({"ok": True})
+    results = []
 
-    filters = request.json or {}
-    min_price = float(filters["minPrice"]) if filters.get("minPrice") else None
-    max_price = float(filters["maxPrice"]) if filters.get("maxPrice") else None
+    for symbol in STOCKS:
+        data = analyze_stock(symbol)
+        if data:
+            results.append(data)
 
-    valid = []
+        # IMPORTANT: prevent Yahoo rate-limit
+        time.sleep(1)
 
-    for s in MOCK_STOCKS:
-        if min_price and s["price"] < min_price:
-            continue
-        if max_price and s["price"] > max_price:
-            continue
+    # Sort by strongest move
+    results = sorted(results, key=lambda x: x["avgMove"], reverse=True)
 
-        # 5-day strategy logic
-        if 0.4 <= s["avgMove"] <= 1.5:
-            valid.append(s)
-
-    top_picks = valid[:3]
+    # Top picks (max 3)
+    top_picks = []
+    for r in results[:3]:
+        top_picks.append({
+            "symbol": r["symbol"],
+            "confidence": "HIGH",
+            "entry": "MARKET",
+            "holdDays": 5,
+            "stopLossPercent": -1,
+            "expectedMovePercent": round(r["avgMove"], 2)
+        })
 
     return jsonify({
-        "marketStatus": "TRADE" if valid else "NO_TRADE_TODAY",
-        "note": "MOCK MODE - Strategy logic validated",
-        "validSetups": valid,
-        "topPicks": [
-            {
-                "symbol": s["symbol"],
-                "entry": "MARKET",
-                "targetPercent": 2.0,
-                "stopLossPercent": -1.0,
-                "holdDays": 5,
-                "confidence": "HIGH"
-            }
-            for s in top_picks
-        ],
-        "timestamp": datetime.now().isoformat()
+        "marketStatus": "TRADE" if top_picks else "NO_TRADE",
+        "note": "LIVE MODE - Yahoo safe scan",
+        "timestamp": datetime.utcnow().isoformat(),
+        "topPicks": top_picks,
+        "validSetups": results
     })
 
+# -------------------------
+# RENDER PORT BINDING
+# -------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
